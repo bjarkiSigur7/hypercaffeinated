@@ -49,6 +49,7 @@ It does, and it's great, until you close the lid. Here's the coffee menu:
 | Stays awake with the **lid closed, on battery**         | ❌ the lid wins (`-s` only works on AC) | ✅                         | ✅                            |
 | Toggle **without a sudo password**, so an agent or a Shortcut can do it | ✅              | ❌ needs sudo every time              | ✅ writes one word to a file  |
 | **Turns itself off at low battery**                     | ❌                        | ❌                                   | ✅ at 20 % (configurable)     |
+| **Turns itself off when the Mac runs hot**              | ❌                        | ❌                                   | ✅ at thermal state *serious* |
 | **Turns itself off after a max time**                   | only with `-t`            | ❌ forget it once, cook it all weekend | ✅ after 12 h (configurable) |
 | Switches on **Low Power Mode** to run cooler            | ❌                        | ❌                                   | ✅ and restores your setting  |
 | Survives the terminal / agent session ending            | ❌ dies with its process  | ✅ even across reboots (scary)        | ✅ with guardrails            |
@@ -65,6 +66,10 @@ This is the part to actually read.
   Spotlight indexing after an update) can get properly hot. Fanless MacBook Airs throttle; Macs
   with fans can still get hot inside a padded sleeve. Heat also ages your battery.
   - Low Power Mode is switched on automatically while No-Sleep is on.
+  - The thermal guard turns No-Sleep off when macOS reports a *serious* or *critical* thermal state,
+    and puts the Mac to sleep right away if the lid is closed. It's a backstop, not a guarantee:
+    it checks about once a minute, and `ProcessInfo.thermalState` is a coarse system-wide signal,
+    **not a battery temperature reading**. Heat can still harm a battery before it trips.
   - Keep the work light: agent turns, edits, tests. Not a 40-minute Xcode build or a 70B model.
   - Prefer an open sleeve or outer pocket. Don't bury it under a jacket. **Never in a hot car.**
   - Check it when you arrive. Hot to the touch? Take it out and turn No-Sleep off.
@@ -87,8 +92,8 @@ your call.
 ```bash
 git clone https://github.com/n-athana/hypercaffeinated
 cd hypercaffeinated
-less install.sh            # it installs a root daemon, so read it first (about 200 lines)
-sudo bash install.sh       # defaults: auto-off at 20 % battery or after 12 h
+less install.sh            # it installs a root daemon, so read it first (about 240 lines)
+sudo bash install.sh       # defaults: auto-off at 20 % battery or after 12 h, thermal guard always on
 ```
 
 More careful:
@@ -107,16 +112,19 @@ echo 'alias nosleep="$HOME/NoSleep/nosleep"' >> ~/.zshrc
 
 ```console
 $ nosleep on
-☕ No-Sleep ON since 24.11. 09:42 · checked 09:42:07
+☕ No-Sleep ON since 24.11. 09:42 · thermal: nominal · checked 09:42:07
 
 $ nosleep status
-☕ No-Sleep ON since 24.11. 09:42 · checked 09:43:07
+☕ No-Sleep ON since 24.11. 09:42 · thermal: nominal · checked 09:43:07
 
 $ nosleep off
-😴 No-Sleep OFF, normal sleep · checked 10:21:03
+😴 No-Sleep OFF, normal sleep · thermal: nominal · checked 10:21:03
 
 $ nosleep status        # after a guard stepped in
-😴 No-Sleep OFF, normal sleep (auto-off: battery at 20%) · checked 11:02:41
+😴 No-Sleep OFF, normal sleep (auto-off: battery at 20%) · thermal: nominal · checked 11:02:41
+
+$ nosleep status        # after the thermal guard stepped in
+😴 No-Sleep OFF, normal sleep (auto-off: thermal state serious) · thermal: fair · checked 14:15:09
 ```
 
 `nosleep toggle` flips it. That's the whole interface.
@@ -155,10 +163,11 @@ flowchart LR
 2. A root LaunchDaemon wakes up when that file changes, and every 60 s anyway.
 3. Switching **on**, it saves your current power mode, turns Low Power Mode on and sets
    `pmset -a disablesleep 1`.
-4. Every run it checks the guards: on battery at or below `--min-batt` %, or on for more than
-   `--max-hours`? Then it writes `off` back into the flag itself.
+4. Every run it checks the guards: on battery at or below `--min-batt` %, on for more than
+   `--max-hours`, or a thermal state of *serious* or *critical*? Then it writes `off` back into the
+   flag itself. After a thermal trip with the lid closed, it also runs `pmset sleepnow`.
 5. Switching **off**, it sets `disablesleep 0` and restores your saved power mode.
-6. It writes a one-line summary to `~/NoSleep/status`, which `nosleep` prints.
+6. It writes a one-line summary, including the thermal state, to `~/NoSleep/status`, which `nosleep` prints.
 
 ## Security notes
 
@@ -189,9 +198,17 @@ you like.
 **Is this bad for my battery?** Heat and deep discharges are what age batteries. The 20 % guard
 and Low Power Mode help; a bag in the sun doesn't.
 
+**How does the thermal guard read the temperature?** It doesn't read degrees. It asks macOS for
+`ProcessInfo.thermalState` (*nominal*, *fair*, *serious*, *critical*) through the built-in
+`osascript`. If that ever fails, the status line shows `thermal: unknown` and the guard **cannot
+trip**; the battery and time guards keep working.
+
+**Already installed?** Pull and run `sudo bash install.sh` again to get new guards. Pass your
+`--min-batt` / `--max-hours` options again if you use them.
+
 **Can I run it permanently?** You can, but don't. The 12 h guard exists because you will forget.
 
-**Why not an app?** Apps exist and some are great. This is ~200 lines of bash you can read in
+**Why not an app?** Apps exist and some are great. This is ~240 lines of bash you can read in
 five minutes, with an interface an agent can drive.
 
 **Is the name medical advice?** No. Drink water. Get some sleep yourself.

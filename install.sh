@@ -10,7 +10,8 @@
 #   ~/NoSleep/nosleep small helper: nosleep on|off|toggle|status
 #   A root LaunchDaemon reads the flag (on change + every 60 s) and runs pmset.
 #   It only compares the flag to "on"/"off" and never runs anything from it.
-# Safety: automatic OFF when on battery at <= MIN_BATT % or after MAX_HOURS.
+# Safety: automatic OFF when on battery at <= MIN_BATT %, after MAX_HOURS, or when
+# macOS reports a serious or critical thermal state.
 # Written for the macOS system bash (3.2): no bash 4+ features, please.
 set -euo pipefail
 
@@ -119,8 +120,18 @@ if echo "$CUSTOM" | grep -qw lowpowermode; then KEY=lowpowermode
 elif echo "$CUSTOM" | grep -qw powermode; then KEY=powermode; fi
 val() { echo "$CUSTOM" | awk -v s="$1" -v k="$KEY" '/^[^ \t]/{f=($0 ~ "^"s)} f && $1==k {print $2; exit}'; }
 
+# ProcessInfo.thermalState: 0 nominal, 1 fair, 2 serious, 3 critical.
+# Read through the built-in JavaScript bridge, so nothing needs compiling.
+case "$(osascript -l JavaScript -e 'ObjC.import("Foundation"); $.NSProcessInfo.processInfo.thermalState' 2>/dev/null)" in
+  0) thermal=nominal ;;
+  1) thermal=fair ;;
+  2) thermal=serious ;;
+  3) thermal=critical ;;
+  *) thermal=unknown ;;
+esac
+
 # Safety guards
-reason=""
+reason=""; hot=no
 if [ "$want" = on ]; then
   B=$(pmset -g batt)
   pct=$(echo "$B" | grep -Eo '[0-9]+%' | head -1 | tr -d %)
@@ -131,6 +142,9 @@ if [ "$want" = on ]; then
     s=$(cat "$DB/since")
     [ $(( $(date +%s) - s )) -ge $(( MAX_HOURS * 3600 )) ] && reason="${MAX_HOURS}h limit reached"
   fi
+  case "$thermal" in   # checked last: heat wins over the other reasons
+    serious|critical) reason="thermal state $thermal"; hot=yes ;;
+  esac
   if [ -n "$reason" ]; then
     want=off; safe_write "$STATE" off; echo "$reason" > "$DB/lastreason"
   fi
@@ -165,7 +179,13 @@ else
   msg="😴 No-Sleep OFF, normal sleep"
   [ -f "$DB/lastreason" ] && msg="$msg (auto-off: $(cat "$DB/lastreason"))"
 fi
-safe_write "$STATUS" "$msg · checked $(date '+%H:%M:%S')"
+safe_write "$STATUS" "$msg · thermal: $thermal · checked $(date '+%H:%M:%S')"
+
+# Too hot with the lid closed: don't wait for the idle timer, sleep now.
+if [ "$hot" = yes ] && [ "$now" != 1 ] &&
+   ioreg -r -k AppleClamshellState -d 4 | grep -q '"AppleClamshellState" = Yes'; then
+  pmset sleepnow
+fi
 DAEMON
 chown root:wheel "$BIN"; chmod 755 "$BIN"
 
@@ -212,7 +232,7 @@ chown root:wheel "$PLIST"; chmod 644 "$PLIST"
 launchctl bootout system "$PLIST" 2>/dev/null || true
 launchctl bootstrap system "$PLIST"
 sleep 2
-echo "☕☕☕ hypercaffeinated installed (auto-off at ${MIN_BATT}% battery or after ${MAX_HOURS}h)."
+echo "☕☕☕ hypercaffeinated installed (auto-off at ${MIN_BATT}% battery, after ${MAX_HOURS}h or when running hot)."
 echo "Low-power key on this Mac: $(pmset -g custom | grep -ow 'lowpowermode\|powermode' | head -1 || echo none)"
 cat "$H/NoSleep/status" 2>/dev/null || true
 echo "Toggle with: ~/NoSleep/nosleep on | off | toggle | status"
